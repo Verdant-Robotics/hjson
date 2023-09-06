@@ -1,119 +1,38 @@
 #include <hjson.h>
+
+#include <cstring>
 #include <fstream>
 #include <iostream>
-#include <cstring>
-#include <vector>
-#include <algorithm>
+
 #include "hjson_test.h"
 
-
-#define WRITE_FACIT 0
-
-
-static std::string _readStream(std::ifstream *pInfile) {
+static std::string _readStream(std::ifstream* pInfile) {
   assert(pInfile->is_open());
 
   std::string ret;
-  size_t len = pInfile->tellg();
-  ret.resize(len);
+  ret.resize(pInfile->tellg());
   pInfile->seekg(0, std::ios::beg);
   pInfile->read(&ret[0], ret.size());
   pInfile->close();
 
-  while (len > 0 && ret.at(len - 1) == '\0') {
-    --len;
-  }
-
-  if (len > 0 && ret.at(len - 1) == '\n') {
-    --len;
-  }
-  if (len > 0 && ret.at(len - 1) == '\r') {
-    --len;
-  }
-
-  ret.resize(len);
-
   return ret;
 }
 
-
-static std::string _readFile(std::string pathBeginning, std::string extra,
-  std::string pathEnd, bool *pUsedExtra)
-{
-  // The output from Hjson::Marshal() always uses Unix EOL, but git might have
-  // converted files to Windows EOL on Windows, therefore we open the file in
-  // text mode instead of binary mode.
-  std::ifstream infile(pathBeginning + extra + pathEnd, std::ifstream::ate);
-  if (!infile.is_open()) {
-    infile.open(pathBeginning + pathEnd, std::ifstream::ate);
-    *pUsedExtra = false;
-  } else {
-    *pUsedExtra = true;
-  }
-  if (!infile.is_open()) {
-    return "";
-  }
+static std::string _readFile(std::string path) {
+  std::ifstream infile(path, std::ifstream::ate);
 
   return _readStream(&infile);
 }
 
+static std::string _getTestContent(std::string name) {
+  std::ifstream infile("assets/" + name + "_test.hjson", std::ifstream::ate | std::ifstream::binary);
 
-static inline void _filterComment(Hjson::Value *val, std::string (Hjson::Value::*fg)() const,
-  void (Hjson::Value::*fs)(const std::string&))
-{
-  auto str = (val->*fg)();
-  str.erase(std::remove(str.begin(), str.end(), '\r'), str.end());
-  (val->*fs)(str);
-}
-
-
-static Hjson::Value _getTestContent(std::string name) {
-  Hjson::Value root;
-  Hjson::DecoderOptions opt;
-
-  try {
-    root = Hjson::UnmarshalFromFile("assets/" + name + "_test.hjson", opt);
-  } catch (const Hjson::file_error& e) {
-    root = Hjson::UnmarshalFromFile("assets/" + name + "_test.json", opt);
+  if (!infile.is_open()) {
+    infile.open("assets/" + name + "_test.json", std::ifstream::ate | std::ifstream::binary);
   }
 
-  // Convert EOL to '\n' in comments because the env might have autocrlf=true in git.
-  class Parent {
-  public:
-    Hjson::Value *v;
-    int i;
-  };
-  Hjson::Value *cur = &root;
-  std::vector<Parent> parents;
-  do {
-    _filterComment(cur, &Hjson::Value::get_comment_after, &Hjson::Value::set_comment_after);
-    _filterComment(cur, &Hjson::Value::get_comment_before, &Hjson::Value::set_comment_before);
-    _filterComment(cur, &Hjson::Value::get_comment_inside, &Hjson::Value::set_comment_inside);
-    _filterComment(cur, &Hjson::Value::get_comment_key, &Hjson::Value::set_comment_key);
-
-    if (cur->is_container() && !cur->empty()) {
-      parents.push_back({cur, 0});
-      cur = &(*cur)[0];
-    } else if (!parents.empty()) {
-      ++parents.back().i;
-
-      while (parents.back().i >= parents.back().v->size()) {
-        parents.pop_back();
-        if (parents.empty()) {
-          break;
-        }
-        ++parents.back().i;
-      }
-
-      if (!parents.empty()) {
-        cur = &parents.back().v[0][parents.back().i];
-      }
-    }
-  } while (!parents.empty());
-
-  return root;
+  return _readStream(&infile);
 }
-
 
 static void _evaluate(std::string expected, std::string got) {
   // Visual studio will have trailing null chars in rhjson if there was any
@@ -126,12 +45,16 @@ static void _evaluate(std::string expected, std::string got) {
         break;
       }
     }
-    std::cout << "\nExpected: (size " << expected.size() << ")\n" <<
-      expected << "\n\nGot: (size " << got.size() << ")\n" << got << "\n\n";
+    std::cout << std::endl
+              << "Expected: (size " << expected.size() << ")" << std::endl
+              << expected << std::endl
+              << std::endl
+              << "Got: (size " << got.size() << ")" << std::endl
+              << got << std::endl
+              << std::endl;
     assert(std::strcmp(expected.c_str(), got.c_str()) == 0);
   }
 }
-
 
 static void _examine(std::string filename) {
   size_t pos = filename.find("_test.");
@@ -144,116 +67,57 @@ static void _examine(std::string filename) {
 
   bool shouldFail = !name.compare(0, 4, "fail");
 
+  auto testContent = _getTestContent(name);
   Hjson::Value root;
   try {
-    root = _getTestContent(name);
+    root = Hjson::Unmarshal(testContent);
     if (shouldFail) {
-      std::cout << "Should have failed on " << name << "\n";
+      std::cout << "Should have failed on " << name << std::endl;
       assert(false);
     }
-  } catch (const Hjson::syntax_error& e) {
+  } catch (Hjson::syntax_error e) {
     if (!shouldFail) {
-      std::cout << "Should NOT have failed on " << name << "\n";
+      std::cout << "Should NOT have failed on " << name << std::endl;
       assert(false);
     } else {
       return;
     }
   }
 
-  std::string extra = "";
-#if HJSON_USE_CHARCONV
-  extra = "charconv/";
-#endif
+  auto rhjson = _readFile("assets/sorted/" + name + "_result.hjson");
+  auto actualHjson = Hjson::Marshal(root);
 
-  Hjson::EncoderOptions opt;
-  opt.bracesSameLine = true;
-
-  bool bUsedExtra = false;
-  auto rhjson = _readFile("assets/comments2/", extra, name + "_result.hjson", &bUsedExtra);
-  auto actualHjson = Hjson::Marshal(root, opt);
-
-#if WRITE_FACIT
-  std::ofstream outputFile = std::ofstream("assets/comments2/" +
-    (bUsedExtra ? extra + '/' : "") + name + "_result.hjson", std::ofstream::binary);
-  outputFile << actualHjson << '\n';
-  outputFile.close();
-#endif
+  // std::ofstream outputFile("out.hjson");
+  // outputFile << actualHjson;
+  // outputFile.close();
 
   _evaluate(rhjson, actualHjson);
 
-  opt.bracesSameLine = false;
-
-  rhjson = _readFile("assets/comments/", extra, name + "_result.hjson", &bUsedExtra);
-  actualHjson = Hjson::Marshal(root, opt);
-
-#if WRITE_FACIT
-  outputFile = std::ofstream("assets/comments/" + (bUsedExtra ? extra + '/' : "") +
-    name + "_result.hjson", std::ofstream::binary);
-  outputFile << actualHjson << '\n';
-  outputFile.close();
-#endif
-
-  _evaluate(rhjson, actualHjson);
-
-  opt.comments = false;
-
-  rhjson = _readFile("assets/", extra, name + "_result.hjson", &bUsedExtra);
-  actualHjson = Hjson::Marshal(root, opt);
-
-#if WRITE_FACIT
-  outputFile = std::ofstream("assets/" + (bUsedExtra ? extra + '/' : "") +
-    name + "_result.hjson", std::ofstream::binary);
-  outputFile << actualHjson << '\n';
-  outputFile.close();
-#endif
-
-  _evaluate(rhjson, actualHjson);
-
-  auto rjson = _readFile("assets/", extra, name + "_result.json", &bUsedExtra);
+  auto rjson = _readFile("assets/sorted/" + name + "_result.json");
   auto actualJson = Hjson::MarshalJson(root);
 
-#if WRITE_FACIT
-  outputFile = std::ofstream("assets/" + (bUsedExtra ? extra + '/' : "") +
-    name + "_result.json", std::ofstream::binary);
-  outputFile << actualJson << '\n';
-  outputFile.close();
-#endif
+  // std::ofstream outputFile("out.json");
+  // outputFile << actualJson;
+  // outputFile.close();
 
   _evaluate(rjson, actualJson);
 
-  opt.preserveInsertionOrder = false;
+  auto opt = Hjson::DefaultOptions();
+  opt.preserveInsertionOrder = true;
 
-  rhjson = _readFile("assets/sorted/", extra, name + "_result.hjson", &bUsedExtra);
-  actualHjson = Hjson::Marshal(root, opt);
-
-#if WRITE_FACIT
-  outputFile = std::ofstream("assets/sorted/" + (bUsedExtra ? extra + '/' : "") +
-    name + "_result.hjson", std::ofstream::binary);
-  outputFile << actualHjson << '\n';
-  outputFile.close();
-#endif
-
+  rhjson = _readFile("assets/" + name + "_result.hjson");
+  actualHjson = Hjson::MarshalWithOptions(root, opt);
   _evaluate(rhjson, actualHjson);
 
   opt.bracesSameLine = true;
   opt.quoteAlways = true;
   opt.quoteKeys = true;
   opt.separator = true;
-  opt.comments = false;
 
-  rjson = _readFile("assets/sorted/", extra, name + "_result.json", &bUsedExtra);
-  actualJson = Hjson::Marshal(root, opt);
-
-#if WRITE_FACIT
-  outputFile = std::ofstream("assets/sorted/" + (bUsedExtra ? extra + '/' : "") +
-    name + "_result.json", std::ofstream::binary);
-  outputFile << actualJson << '\n';
-  outputFile.close();
-#endif
-
+  rjson = _readFile("assets/" + name + "_result.json");
+  actualJson = Hjson::MarshalWithOptions(root, opt);
   _evaluate(rjson, actualJson);
 }
-
 
 void test_marshal() {
   std::ifstream infile("assets/testlist.txt");

@@ -5,7 +5,7 @@
   text:
   [
     single quoted string
-    '''You need quotes	for escapes'''
+    '''You need quotes  for escapes'''
     " untrimmed "
     "untrimmed "
     containing " double quotes
